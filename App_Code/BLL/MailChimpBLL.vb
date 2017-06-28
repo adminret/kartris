@@ -22,6 +22,7 @@ Imports MailChimp.Net.Interfaces
 Imports MailChimp.Net.Models
 Imports Newtonsoft.Json.Linq
 Imports System.Collections.ObjectModel
+Imports System.Globalization
 
 
 '========================================================================
@@ -146,11 +147,11 @@ Public Class MailChimpBLL
     Public Async Function AddCustomer() As Task(Of Customer)
         Try
             Dim userFullName As String = ""
-            userFullName = UsersBLL.GetNameandEUVAT(CurrentLoggedUser.ID).Split("|||")(0)
+            userFullName = UsersBLL.GetNameandEUVAT(currentLoggedUser.ID).Split("|||")(0)
             Dim userNamesArray() As String = userFullName.Split(" ")
             'Use the Status property if updating an existing member
-            Dim customer As Customer = New Customer With {.Id = CurrentLoggedUser.ID,
-                                                            .EmailAddress = CurrentLoggedUser.Email,
+            Dim customer As Customer = New Customer With {.Id = currentLoggedUser.ID,
+                                                            .EmailAddress = currentLoggedUser.Email,
                                                             .OptInStatus = True
                                                         }
             customer.FirstName = userNamesArray(0)
@@ -193,31 +194,36 @@ Public Class MailChimpBLL
             End If
             Return Nothing
         Catch ex As Exception
-                Debug.Print(ex.Message)
+            Debug.Print(ex.Message)
         End Try
     End Function
 
     Public Async Function AddCart(ByVal customer As Customer, ByVal orderId As Integer) As Task(Of Cart)
         Try
+            Dim action As String = "add"
             Dim idSufix As String = orderId
             If orderId = 0 Then
-                Dim timestamp = CLng(DateTime.UtcNow.Subtract(New DateTime(1970, 1, 1)).TotalMilliseconds)
-                idSufix = customer.Id & "_" & timestamp
+                'Dim timestamp = CLng(DateTime.UtcNow.Subtract(New DateTime(1970, 1, 1)).TotalMilliseconds)
+                Dim addCartDate As String = Now.ToString("yyyyMMddHH")
+                idSufix = customer.Id & "_" & addCartDate
             End If
 
+            Dim cart As Cart
+            Try
+                cart = manager.ECommerceStores.Carts(mcStoreId).GetAsync("cart_" & idSufix).Result
+                Debug.Print(cart.ToString())
+                Debug.Print(cart.CampaignId)
+                action = "update"
+            Catch ex As Exception
+                cart = Nothing
+            End Try
 
-            Dim cart As Cart = New Cart With {.Id = "cart_" & idSufix,
-                                            .Customer = New Customer With {.Id = customer.Id, .OptInStatus = True},
-                                            .CurrencyCode = CurrencyCode.GBP,
-                                          .OrderTotal = kartrisBasket.TotalIncTax,
-                                          .CheckoutUrl = "http://localhost:54147/Checkout.aspx",
-                                          .Lines = New Collection(Of Line)
-                                        }
             Dim product As Product
+            Dim productLines As Collection(Of Line) = New Collection(Of Line)()
             For counter As Integer = 0 To kartrisBasket.BasketItems.Count - 1
                 product = Await AddProduct(kartrisBasket.BasketItems(counter))
 
-                cart.Lines.Add(New Line With {.Id = "cart_" & idSufix & "_l" & counter,
+                productLines.Add(New Line With {.Id = "cart_" & idSufix & "_l" & counter,
                                             .ProductId = kartrisBasket.BasketItems(counter).ID,
                                             .ProductTitle = kartrisBasket.BasketItems(counter).Name,
                                             .ProductVariantId = kartrisBasket.BasketItems(counter).ID,
@@ -226,8 +232,26 @@ Public Class MailChimpBLL
                                             .Price = kartrisBasket.BasketItems(counter).Price
                 })
             Next
-            Dim taskResult As Cart = Await manager.ECommerceStores.Carts(mcStoreId).AddAsync(cart).ConfigureAwait(False)
 
+            Dim taskResult As Cart
+            If cart Is Nothing Then
+                cart = New Cart With {.Id = "cart_" & idSufix,
+                                            .Customer = New Customer With {.Id = customer.Id, .OptInStatus = True},
+                                            .CurrencyCode = CurrencyCode.GBP,
+                                          .OrderTotal = kartrisBasket.TotalIncTax,
+                                          .CheckoutUrl = "http://localhost:54147/Checkout.aspx",
+                                          .Lines = New Collection(Of Line)
+                                        }
+            End If
+            cart.Lines = productLines
+
+            If action.Equals("add") Then
+                taskResult = Await manager.ECommerceStores.Carts(mcStoreId).AddAsync(cart).ConfigureAwait(False)
+            Else
+                'Await manager.ECommerceStores.Carts(mcStoreId).DeleteAsync("cart_" & idSufix).ConfigureAwait(False)
+                'taskResult = Await manager.ECommerceStores.Carts(mcStoreId).AddAsync(cart).ConfigureAwait(False)
+                'Add Cart after delete is Returning invalid Campaign ID... So a cart will only be added per hour
+            End If
 
             Return taskResult
         Catch ex As Exception
